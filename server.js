@@ -1,82 +1,42 @@
-/** Локальный сервер на стандартной библиотеке Node.js. npm install не нужен. */
 'use strict';
+// Dependency-free local HTTP server. Run: node server.js --open
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
-
-const ROOT = __dirname;
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.txt': 'text/plain; charset=utf-8',
-  '.json': 'application/json; charset=utf-8'
-};
-
-function resolveRequestPath(requestUrl) {
-  const url = new URL(requestUrl, 'http://localhost');
-  const pathname = decodeURIComponent(url.pathname);
-  if (pathname.includes('\0') || pathname.includes('\\')) return null;
-  const target = path.resolve(ROOT, '.' + (pathname === '/' ? '/index.html' : pathname));
-  if (!target.startsWith(ROOT + path.sep) || !MIME[path.extname(target)]) return null;
-  return target;
+const {spawn} = require('node:child_process');
+const root = __dirname;
+const port = Number(process.env.PORT || 8080);
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  console.error('PORT must be an integer between 1 and 65535.');process.exit(1);
 }
-
-function createServer() {
-  return http.createServer((request, response) => {
-    response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.setHeader('Cache-Control', 'no-store');
-    const fail = (code, text) => {
-      response.writeHead(code, { 'Content-Type': 'text/plain; charset=utf-8' });
-      response.end(request.method === 'HEAD' ? undefined : text);
-    };
-    if (!['GET', 'HEAD'].includes(request.method)) {
-      response.setHeader('Allow', 'GET, HEAD');
-      fail(405, 'Метод не поддерживается.');
-      return;
-    }
-    let file;
-    try { file = resolveRequestPath(request.url); }
-    catch { fail(400, 'Неверный адрес.'); return; }
-    if (!file) { fail(404, 'Страница не найдена.'); return; }
-    fs.readFile(file, (error, bytes) => {
-      if (error) { fail(404, 'Страница не найдена. Вернитесь на главную: /'); return; }
-      response.writeHead(200, { 'Content-Type': MIME[path.extname(file)], 'Content-Length': bytes.length });
-      response.end(request.method === 'HEAD' ? undefined : bytes);
-    });
+const host = process.argv.includes('--lan') ? '0.0.0.0' : '127.0.0.1';
+const pages = new Set(['index.html','city.html','hero.html','map.html','battle.html','contracts.html','inventory.html','tavern.html','journal.html']);
+const mime = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8'};
+const server = http.createServer((req,res)=>{
+  if (!['GET','HEAD'].includes(req.method)) {res.writeHead(405,{'Allow':'GET, HEAD'});return res.end();}
+  let pathname;
+  try {pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname);} catch {res.writeHead(400);return res.end('Bad request');}
+  const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+  const allowed = pages.has(relative) || /^assets\/(css|js)\/[a-zA-Z0-9_-]+\.(css|js)$/.test(relative);
+  if (!allowed) {res.writeHead(404,{'Content-Type':'text/plain; charset=utf-8'});return res.end('Страница не найдена');}
+  fs.readFile(path.join(root,relative),(err,data)=>{
+    if(err){res.writeHead(404);return res.end('Not found');}
+    res.writeHead(200,{'Content-Type':mime[path.extname(relative)],'Cache-Control':'no-cache','X-Content-Type-Options':'nosniff'});
+    res.end(req.method==='HEAD'?undefined:data);
   });
-}
-
-if (require.main === module) {
-  const args = process.argv.slice(2);
-  const portIndex = args.indexOf('--port');
-  const port = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    console.error('Укажите порт от 1 до 65535: node server.js --port 8081');
-    process.exit(1);
+});
+server.on('error',err=>{
+  console.error(err.code==='EADDRINUSE' ? `Port ${port} is busy. Close another game server or set PORT to another number.` : err.message);
+  process.exit(1);
+});
+server.listen(port,host,()=>{
+  const url=`http://localhost:${port}`;
+  console.log(`Witcher: Hunters Path\nOpen ${url}\nKeep this window open. Ctrl+C to stop.`);
+  if(host==='0.0.0.0')console.log('LAN mode: use your computer LAN IP and this port on your phone.');
+  if(process.argv.includes('--open')){
+    const platform=process.platform;
+    const command=platform==='win32'?'cmd':platform==='darwin'?'open':'xdg-open';
+    const args=platform==='win32'?['/c','start','',url]:[url];
+    const child=spawn(command,args,{stdio:'ignore'});child.on('error',()=>console.log(`Open ${url} in your browser.`));
   }
-  const lan = args.includes('--lan');
-  const server = createServer();
-  server.on('error', error => {
-    console.error(error.code === 'EADDRINUSE'
-      ? 'Этот порт занят. Попробуйте: node server.js --port 8081'
-      : 'Не удалось запустить сервер: ' + error.message);
-    process.exitCode = 1;
-  });
-  server.listen(port, lan ? '0.0.0.0' : '127.0.0.1', () => {
-    console.log('\nАркантериум запущен: http://localhost:' + port);
-    if (lan) {
-      console.log('Доступ включён для устройств в вашей локальной сети.');
-      for (const entries of Object.values(os.networkInterfaces())) {
-        for (const entry of entries || []) {
-          if (entry.family === 'IPv4' && !entry.internal) console.log('Адрес для телефона: http://' + entry.address + ':' + port);
-        }
-      }
-    }
-    console.log('Оставьте окно открытым. Для остановки нажмите Ctrl+C.\n');
-  });
-}
-
-module.exports = { createServer, resolveRequestPath };
+});
