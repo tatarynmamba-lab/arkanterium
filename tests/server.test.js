@@ -19,7 +19,7 @@ test('local server serves all pages and assets; source and traversal are blocked
     child.once('exit',code=>{if(!ready){clearTimeout(timeout);reject(Error(`Server exited: ${code}`));}});
   });
   const base=`http://127.0.0.1:${port}`;
-  for(const file of ['','city.html','hero.html','map.html','battle.html','contracts.html','inventory.html','tavern.html','journal.html','assets/js/data.js','assets/js/engine.js','assets/js/app.js','assets/css/style.css']){
+  for(const file of ['','guilds.html','city.html','hero.html','map.html','battle.html','contracts.html','inventory.html','tavern.html','journal.html','assets/js/data.js','assets/js/engine.js','assets/js/app.js','assets/css/style.css']){
     const response=await fetch(`${base}/${file}`);assert.equal(response.status,200,file);
     assert.ok((await response.text()).length>100);
   }

@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const {classes,items,enemies,zones,CITY_ZONE}=window.GameData;
+  const {classes,items,materials,guilds,recipes,enemies,zones,CITY_ZONE}=window.GameData;
   const engine=window.GameEngine.create();
   let game=engine.state;
   const $=id=>document.getElementById(id);
@@ -14,7 +14,26 @@
     return '+'+it.bonus+' '+(it.type==='weapon'?'атаки':'защиты')+' · '+classLabel(it.classId);
   }
   function dropsTable(enemyId){
-    return `<div class="dropCard"><h3>🎁 Возможная добыча</h3><table class="dropTable"><thead><tr><th scope="col">Предмет</th><th scope="col">Шанс</th></tr></thead><tbody>${enemies[enemyId].drops.map(drop=>`<tr data-drop="${drop.itemId}" data-chance="${drop.chance}"><td><strong>${items[drop.itemId].name}</strong><small>${itemInfo(items[drop.itemId])}</small></td><td>${percent(drop.chance)}</td></tr>`).join('')}</tbody></table><p class="note">Каждый предмет проверяется отдельно после победы. Может выпасть несколько предметов или ни одного. Класс и уровень не меняют эти шансы.</p></div>`;
+    return `<div class="dropCard"><h3>🎁 Ингредиенты с противника</h3><table class="dropTable"><thead><tr><th scope="col">Ингредиент</th><th scope="col">Количество</th><th scope="col">Шанс</th></tr></thead><tbody>${enemies[enemyId].drops.map(drop=>`<tr data-drop="${drop.itemId}" data-chance="${drop.chance}" data-quantity="${drop.quantity}"><td><strong>${materials[drop.itemId].icon} ${materials[drop.itemId].name}</strong></td><td>× ${drop.quantity}</td><td>${percent(drop.chance)}</td></tr>`).join('')}</tbody></table><p class="note">С врагов выпадают только ингредиенты. Каждый проверяется отдельно после победы. Снаряжение создаётся в гильдиях Светограда.</p></div>`;
+  }
+  function materialSources(materialId){
+    return Object.entries(enemies).flatMap(([enemyId,e])=>{
+      const drop=e.drops.find(row=>row.itemId===materialId);
+      return drop?[`${e.name} — ${zones.find(z=>z.enemies.includes(enemyId)).name}, ${percent(drop.chance)}, × ${drop.quantity}`]:[];
+    });
+  }
+  function renderGuilds(){
+    put('cityGuilds',Object.entries(guilds).map(([id,guild])=>`<a class="tile guildTile" href="guilds.html#guild-${id}"><strong>${guild.icon} ${guild.name}</strong><span>${guild.description}</span></a>`).join(''));
+    const held=Object.entries(materials).filter(([id])=>(game.materials[id]||0)>0);
+    const materialList=held.length?held.map(([id,m])=>`<div class="materialRow"><span>${m.icon} ${m.name}</span><strong>× ${game.materials[id]}</strong></div>`).join(''):'<p class="note">Пока нет ингредиентов. Посмотри таблицы добычи на странице боя и отправляйся на охоту.</p>';
+    put('materialsInventory',`<h2>Ингредиенты</h2>${materialList}<a class="btn linkButton secondary" href="guilds.html">Открыть гильдии →</a>`);
+    put('guildMaterials',`<h2>Твои ингредиенты</h2>${materialList}<p class="note">Создано предметов: ${game.crafted}</p>`);
+    const inCity=game.zone===CITY_ZONE;
+    put('guildLocation',inCity?'<p class="note">Ты в Светограде. Выбери рецепт в одной из гильдий. Изготовление гарантировано; материалы и плата расходуются один раз.</p>':`<p class="note">Сейчас ты в локации «${zones[game.zone].name}». Создавать снаряжение можно только в городе.</p><button class="btn secondary" data-action="enterCity" ${disabled(game.enemy)}>Вернуться в Светоград</button><p class="note">${game.enemy?'Во время боя создавать предметы и возвращаться в город нельзя.':''}</p>`);
+    put('guildList',Object.entries(guilds).map(([guildId,guild])=>`<section class="card guildSection" id="guild-${guildId}"><h2>${guild.icon} ${guild.name}</h2><p class="muted">${guild.description}</p><div class="recipeGrid">${Object.entries(recipes).filter(([,recipe])=>recipe.guildId===guildId).map(([recipeId,recipe])=>{
+      const it=items[recipe.itemId],status=engine.craftStatus(recipeId);
+      return `<article class="recipeCard" data-recipe-card="${recipeId}"><h3>${it.name}</h3><p class="level">${itemInfo(it)}</p><p class="note">Уровень ${recipe.level}+ · Плата ${recipe.gold} монет · У тебя ${game.gold}</p><ul class="ingredientsList">${Object.entries(recipe.ingredients).map(([id,count])=>`<li><span>${materials[id].icon} ${materials[id].name}</span><strong class="${(game.materials[id]||0)>=count?'enough':'missing'}">${game.materials[id]||0} / ${count}</strong></li>`).join('')}</ul><button class="btn craftButton" data-recipe="${recipeId}" ${disabled(!status.ok)}>${status.ok?'⚒️ Создать':status.reason}</button><details class="recipeSources"><summary>Где добыть ингредиенты</summary>${Object.keys(recipe.ingredients).map(id=>`<p><strong>${materials[id].name}</strong><br>${materialSources(id).map(source=>esc(source)).join('<br>')}</p>`).join('')}</details></article>`;
+    }).join('')}</div></section>`).join(''));
   }
   function renderClassSelection(){
     $('classSelection').hidden=game.classId!==null;
@@ -39,7 +58,7 @@
       put('gameActions',`<div class="controls"><button class="btn" data-action="explore">🔎 Найти противника</button><button class="btn secondary" data-action="potion" ${disabled(game.potions<1||game.hp===game.maxHp)}>🧪 Лечение (${game.potions})</button><button class="btn secondary" data-action="manaPotion" ${disabled(game.manaPotions<1||game.mana===game.maxMana)}>🔷 Мана (${game.manaPotions})</button></div>`);
     }
     put('lootPreview',game.enemy?'':zone.enemies.map(id=>`<section class="card"><h2>${enemies[id].icon} ${enemies[id].name}</h2><p class="note">Здоровье ${enemies[id].hp} · Атака ${enemies[id].attack}</p>${dropsTable(id)}</section>`).join(''));
-    put('battleResult',game.lastResult?`<div class="victory"><strong>🏆 ${enemies[game.lastResult.enemyId].name} побеждён</strong><p>+${game.lastResult.gold} монет · +${game.lastResult.xp} опыта</p><p>Добыча: ${game.lastResult.drops.length?game.lastResult.drops.map(id=>items[id].name).join(', '):'предметы не выпали'}.</p></div>`:'');
+    put('battleResult',game.lastResult?`<div class="victory"><strong>🏆 ${enemies[game.lastResult.enemyId].name} побеждён</strong><p>+${game.lastResult.gold} монет · +${game.lastResult.xp} опыта</p><p>Ингредиенты: ${game.lastResult.drops.length?game.lastResult.drops.map(drop=>materials[drop.itemId].name+' × '+drop.quantity).join(', '):'не выпали'}.</p><a href="guilds.html">Посмотреть рецепты гильдий →</a></div>`:'');
   }
   function renderContract(){
     if(!$('contract'))return;
@@ -73,9 +92,9 @@
     if($('cityServices'))$('cityServices').hidden=!inCity;
     put('heroSkills',`<h2>${c.icon} Умения: ${c.name}</h2><div class="gearline"><div><strong>${c.skill} · ${c.skillCost} маны</strong><small>${c.skillDescription}</small></div></div><div class="gearline"><div><strong>${c.guard} · ${c.guardCost} маны</strong><small>Блокирует следующую атаку противника.</small></div></div><p class="note">Каждый уровень: +${c.hpGrowth} здоровья, +${c.manaGrowth} маны, +${c.attackGrowth} атаки. Обычная атака возвращает 1 ману.</p>`);
     put('equipment',['weapon','armor'].map(type=>{const it=game.equipment[type];return `<div class="gearline"><div><strong>${type==='weapon'?c.icon+' Оружие':'🛡️ Доспех'}</strong><small>${esc(it.name)}</small></div><span class="level">+${it.bonus} ${type==='weapon'?'атаки':'защиты'}</span></div>`;}).join(''));
-    put('inventory',`<h3>Сумка (${game.bag.length})</h3>${game.bag.length?game.bag.map((it,index)=>`<div class="inventoryRow"><div><strong>${esc(it.name)}</strong><small class="muted">${itemInfo(it)}</small></div><button class="equip" data-item="${index}" ${disabled(game.enemy||it.classId!=='all'&&it.classId!==game.classId)}>${it.classId!=='all'&&it.classId!==game.classId?'Другой класс':'Надеть'}</button></div>`).join(''):'<p class="note">Здесь появится снаряжение после побед.</p>'}<p class="note">Зелья лечения: ${game.potions} · Зелья маны: ${game.manaPotions}</p>`);
+    put('inventory',`<h3>Сумка (${game.bag.length})</h3>${game.bag.length?game.bag.map((it,index)=>`<div class="inventoryRow"><div><strong>${esc(it.name)}</strong><small class="muted">${itemInfo(it)}</small></div><button class="equip" data-item="${index}" ${disabled(game.enemy||it.classId!=='all'&&it.classId!==game.classId)}>${it.classId!=='all'&&it.classId!==game.classId?'Другой класс':'Надеть'}</button></div>`).join(''):'<p class="note">Создай снаряжение из ингредиентов в одной из городских гильдий.</p>'}<p class="note">Зелья лечения: ${game.potions} · Зелья маны: ${game.manaPotions}</p>`);
     put('log',game.log.map(message=>'<li>'+esc(message)+'</li>').join(''));
-    renderContract();renderBattle(c);
+    renderContract();renderBattle(c);renderGuilds();
     document.querySelectorAll('[data-action="rest"]').forEach(el=>el.disabled=!!game.enemy||game.gold<5||game.hp===game.maxHp&&game.mana===game.maxMana);
     document.querySelectorAll('[data-action="buy"]').forEach(el=>el.disabled=!!game.enemy||game.gold<10);
     document.querySelectorAll('[data-action="buyMana"]').forEach(el=>el.disabled=!!game.enemy||game.gold<12);
@@ -87,6 +106,7 @@
       if(engine.selectClass(el.dataset.class))window.location.href=engine.state.enemy?'battle.html':engine.state.zone===CITY_ZONE?'city.html':'index.html';
     }else if(el.dataset.zone!==undefined)engine.chooseZone(Number(el.dataset.zone));
     else if(el.dataset.item!==undefined)engine.equip(Number(el.dataset.item));
+    else if(el.dataset.recipe)engine.craft(el.dataset.recipe);
     else if(el.dataset.action){
       const before=engine.state.zone;engine.action(el.dataset.action);
       if(el.dataset.action==='track'&&engine.state.enemy&&document.body.dataset.page!=='battle')window.location.href='battle.html';

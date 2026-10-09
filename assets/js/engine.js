@@ -2,15 +2,15 @@
 window.GameEngine = (() => {
   const KEY='heroes-path-rpg-v4';
   const LEGACY_KEY='witcher-hunters-path-fan-v2'; // Read-only migration from the previous prototype.
-  const {classes,items,enemies,zones,CITY_ZONE,makeItem}=window.GameData;
+  const {classes,items,materials,recipes,enemies,zones,CITY_ZONE,makeItem}=window.GameData;
   const known=(obj,key)=>typeof key==='string'&&Object.hasOwn(obj,key);
   const integer=(v,min=0,max=100000000)=>Number.isSafeInteger(v)&&v>=min&&v<=max;
   const text=v=>typeof v==='string'&&v.length>0&&v.length<1500;
   const clone=v=>JSON.parse(JSON.stringify(v));
   const fresh=()=>({
-    schemaVersion:4,classId:null,level:1,xp:0,maxHp:1,hp:1,maxMana:0,mana:0,attack:0,defense:0,
+    schemaVersion:5,classId:null,level:1,xp:0,maxHp:1,hp:1,maxMana:0,mana:0,attack:0,defense:0,
     gold:18,potions:2,manaPotions:1,kills:0,contractsCompleted:0,zone:CITY_ZONE,enemy:null,
-    shield:false,contract:null,equipment:{weapon:null,armor:null},bag:[],migration:null,lastResult:null,
+    shield:false,contract:null,equipment:{weapon:null,armor:null},bag:[],materials:{},crafted:0,migration:null,lastResult:null,
     log:['🏰 Добро пожаловать в Светоград. Выбери класс, чтобы начать свою историю.']
   });
   function validItem(it,type) {
@@ -20,8 +20,8 @@ window.GameEngine = (() => {
       (it.id.startsWith('legacy-')||it.bonus===items[it.id].bonus);
   }
   function valid(s) {
-    if(!s||s.schemaVersion!==4||!(s.classId===null||known(classes,s.classId)))return false;
-    for(const key of ['xp','attack','defense','gold','potions','manaPotions','kills','contractsCompleted'])if(!integer(s[key]))return false;
+    if(!s||s.schemaVersion!==5||!(s.classId===null||known(classes,s.classId)))return false;
+    for(const key of ['xp','attack','defense','gold','potions','manaPotions','kills','contractsCompleted','crafted'])if(!integer(s[key]))return false;
     if(!integer(s.level,1,100000)||!integer(s.maxHp,1)||!integer(s.hp,1,s.maxHp)||!integer(s.maxMana,0)||!integer(s.mana,0,s.maxMana))return false;
     if(!integer(s.zone,0,zones.length-1)||s.level<zones[s.zone].min||typeof s.shield!=='boolean')return false;
     if(!s.equipment)return false;
@@ -31,6 +31,7 @@ window.GameEngine = (() => {
       if(!validItem(it,type)||s.classId&&it.classId!=='all'&&it.classId!==s.classId)return false;
     }
     if(!Array.isArray(s.bag)||s.bag.length>5000||!s.bag.every(it=>validItem(it)))return false;
+    if(!s.materials||typeof s.materials!=='object'||Array.isArray(s.materials)||!Object.entries(s.materials).every(([id,count])=>known(materials,id)&&integer(count)))return false;
     if(!Array.isArray(s.log)||s.log.length>18||!s.log.every(text))return false;
     if(s.enemy!==null&&(!s.enemy||!known(enemies,s.enemy.id)||!zones[s.zone].enemies.includes(s.enemy.id)||!integer(s.enemy.hp,1,enemies[s.enemy.id].hp)))return false;
     if(s.contract!==null){
@@ -40,7 +41,7 @@ window.GameEngine = (() => {
     if(s.migration!==null&&(!s.migration||!['hpRatio','manaRatio'].every(k=>Number.isFinite(s.migration[k])&&s.migration[k]>=0&&s.migration[k]<=1)))return false;
     if(s.lastResult!==null){
       const r=s.lastResult;
-      if(!r||!known(enemies,r.enemyId)||!integer(r.gold)||!integer(r.xp)||!Array.isArray(r.drops)||r.drops.length>10||!r.drops.every(id=>known(items,id)))return false;
+      if(!r||!known(enemies,r.enemyId)||!integer(r.gold)||!integer(r.xp)||!Array.isArray(r.drops)||r.drops.length>10||!r.drops.every(drop=>drop&&known(materials,drop.itemId)&&integer(drop.quantity,1)))return false;
     }
     return true;
   }
@@ -86,15 +87,19 @@ window.GameEngine = (() => {
       if(!['heroes-path-save','hunters-path-save'].includes(parsed.format)||parsed.version!==1)throw Error('Неподдерживаемая версия сохранения.');
       state=parsed.state;
     }
-    if(state&&state.schemaVersion===4){
-      if(!valid(state))throw Error('Некорректное сохранение.');
-      return clone(state);
+    if(state&&[4,5].includes(state.schemaVersion)){
+      const next=clone(state);
+      if(next.schemaVersion===4){
+        next.schemaVersion=5;next.materials={};next.crafted=0;next.lastResult=null;
+      }
+      if(!valid(next))throw Error('Некорректное сохранение.');
+      return next;
     }
     return migrate(state);
   }
   function rollDrops(enemyId,random=Math.random) {
     if(!known(enemies,enemyId))return [];
-    return enemies[enemyId].drops.filter(drop=>random()<drop.chance).map(drop=>drop.itemId);
+    return enemies[enemyId].drops.filter(drop=>random()<drop.chance).map(drop=>({itemId:drop.itemId,quantity:drop.quantity}));
   }
   function create({storage,random=Math.random}={}) {
     let storageAvailable=true;
@@ -140,6 +145,29 @@ window.GameEngine = (() => {
       game.bag.splice(index,1);game.bag.push(game.equipment[it.type]);game.equipment[it.type]=it;
       note('✨ Надето: '+it.name+'.');commit();return true;
     }
+    function craftStatus(recipeId){
+      if(!known(recipes,recipeId))return {ok:false,reason:'Неизвестный рецепт'};
+      const recipe=recipes[recipeId],it=items[recipe.itemId];
+      if(!game.classId)return {ok:false,reason:'Сначала выбери класс'};
+      if(game.enemy)return {ok:false,reason:'Сначала закончи бой'};
+      if(game.zone!==CITY_ZONE)return {ok:false,reason:'Вернись в Светоград'};
+      if(it.classId!=='all'&&it.classId!==game.classId)return {ok:false,reason:'Для класса «'+classes[it.classId].name+'»'};
+      if(game.level<recipe.level)return {ok:false,reason:'Нужен уровень '+recipe.level};
+      if(game.bag.length>=5000)return {ok:false,reason:'Сумка заполнена'};
+      if(Object.entries(recipe.ingredients).some(([id,count])=>(game.materials[id]||0)<count))return {ok:false,reason:'Не хватает ингредиентов'};
+      if(game.gold<recipe.gold)return {ok:false,reason:'Не хватает монет'};
+      return {ok:true,reason:'Создать'};
+    }
+    function craft(recipeId){
+      const status=craftStatus(recipeId);
+      if(!status.ok)return false;
+      const recipe=recipes[recipeId];
+      // All requirements pass before any resources are consumed.
+      for(const [id,count] of Object.entries(recipe.ingredients))game.materials[id]-=count;
+      game.gold-=recipe.gold;game.bag.push(makeItem(recipe.itemId));game.crafted++;
+      note('⚒️ Создано: '+items[recipe.itemId].name+'. Предмет добавлен в сумку.');
+      commit();return true;
+    }
     function levelUp(){
       const c=heroClass();
       while(game.xp>=xpNeed()){
@@ -157,11 +185,9 @@ window.GameEngine = (() => {
       }
       game.gold+=gold;game.xp+=xp;
       const drops=rollDrops(id,random);
-      for(const itemId of drops){
-        const it=items[itemId];
-        if(it.type==='potion'){if(it.effect==='health')game.potions++;else game.manaPotions++;}
-        else game.bag.push(makeItem(itemId));
-        note('🎁 Добыча: '+it.name+'.');
+      for(const drop of drops){
+        game.materials[drop.itemId]=(game.materials[drop.itemId]||0)+drop.quantity;
+        note('🎁 Ингредиент: '+materials[drop.itemId].name+' × '+drop.quantity+'.');
       }
       game.lastResult={enemyId:id,gold,xp,drops};game.enemy=null;game.shield=false;
       note('🏆 '+e.name+' побеждён. +'+xp+' опыта, +'+gold+' монет.');levelUp();
@@ -248,7 +274,7 @@ window.GameEngine = (() => {
     commit();
     return {
       get state(){return game;},get storageAvailable(){return storageAvailable;},
-      selectClass,action,chooseZone,equip,xpNeed,strength,armor,reload,
+      selectClass,action,chooseZone,equip,craftStatus,craft,xpNeed,strength,armor,reload,
       subscribe(fn){listeners.push(fn);},
       reset(){game=fresh();commit();},
       exportSave(){return JSON.stringify({format:'heroes-path-save',version:1,state:game},null,2);},

@@ -10,7 +10,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   console.error('PORT must be an integer between 1 and 65535.');process.exit(1);
 }
 const host = process.argv.includes('--lan') ? '0.0.0.0' : '127.0.0.1';
-const pages = new Set(['index.html','city.html','hero.html','map.html','battle.html','contracts.html','inventory.html','tavern.html','journal.html']);
+const pages = new Set(['index.html','guilds.html','city.html','hero.html','map.html','battle.html','contracts.html','inventory.html','tavern.html','journal.html']);
 const mime = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8'};
 const server = http.createServer((req,res)=>{
   if (!['GET','HEAD'].includes(req.method)) {res.writeHead(405,{'Allow':'GET, HEAD'});return res.end();}

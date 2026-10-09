@@ -6,7 +6,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const root=path.join(__dirname,'..');
 const read=file=>fs.readFileSync(path.join(root,file),'utf8');
-const pages=['index','city','hero','map','battle','contracts','inventory','tavern','journal'];
+const pages=['index','city','guilds','hero','map','battle','contracts','inventory','tavern','journal'];
 function memoryStorage(){
   const values=new Map();
   return {getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value)};
@@ -118,9 +118,9 @@ test('every displayed probability has the same inclusive/exclusive threshold as 
   for(const [id,enemy] of Object.entries(data.enemies)){
     assert.ok(enemy.drops.length);
     for(const drop of enemy.drops){
-      assert.ok(drop.chance>0&&drop.chance<=1);assert.ok(data.items[drop.itemId]);
-      assert.ok(api.rollDrops(id,()=>drop.chance-0.000001).includes(drop.itemId),id+': just below '+drop.chance);
-      assert.equal(api.rollDrops(id,()=>drop.chance).includes(drop.itemId),false,id+': exact boundary');
+      assert.ok(drop.chance>0&&drop.chance<=1);assert.equal(data.materials[drop.itemId].type,'material');assert.equal(data.items[drop.itemId],undefined);assert.ok(Number.isInteger(drop.quantity)&&drop.quantity>0);
+      assert.ok(api.rollDrops(id,()=>drop.chance-0.000001).some(value=>value.itemId===drop.itemId),id+': just below '+drop.chance);
+      assert.equal(api.rollDrops(id,()=>drop.chance).some(value=>value.itemId===drop.itemId),false,id+': exact boundary');
     }
   }
 });
@@ -131,12 +131,13 @@ test('independent rolls can award every listed item or no items',()=>{
     assert.equal(api.rollDrops(id,()=>0.9999).length,0);
   }
 });
-test('victory adds actual gear and potion drops to inventory and persists the result',()=>{
+test('victory grants ingredients with exact quantities and never grants equipment or potions',()=>{
   let roll=0.9;const {game,storage,api}=setup({classId:'warrior',random:()=>roll});
   game.action('leaveCity');game.action('explore');assert.equal(game.state.enemy.id,'goblin');roll=0;
   while(game.state.enemy)game.action('hit');
-  assert.equal(game.state.bag.length,3);assert.equal(game.state.manaPotions,2);assert.equal(game.state.lastResult.drops.length,4);
-  assert.equal(game.state.bag[1].classId,'archer');assert.equal(api.create({storage}).state.lastResult.drops.length,4);
+  assert.equal(game.state.bag.length,0);assert.equal(game.state.manaPotions,1);assert.equal(game.state.potions,2);
+  assert.equal(game.state.materials.iron,2);assert.equal(game.state.materials.wood,1);assert.equal(game.state.materials.rune,1);
+  assert.equal(game.state.lastResult.drops.length,3);assert.equal(api.create({storage}).state.materials.iron,2);
 });
 test('level gates remain in force and prevent tracking from another region',()=>{
   const {game}=setup({classId:'warrior'});game.chooseZone(1);assert.equal(game.state.zone,4);
@@ -168,7 +169,7 @@ test('malformed save recovery and blocked storage keep the class picker usable',
   const {game:blocked}=setup({storage:{getItem(){throw Error('Blocked');},setItem(){throw Error('Blocked');}}});
   assert.equal(blocked.storageAvailable,false);assert.equal(blocked.selectClass('mage'),true);
 });
-test('all nine pages have valid references, mana indicators and no previous world text',()=>{
+test('all ten pages have valid references, mana indicators and no previous world text',()=>{
   for(const page of pages){
     const html=read(page+'.html');assert.equal((html.match(/aria-current="page"/g)||[]).length,1);
     for(const match of html.matchAll(/(?:src|href)="([^"]+)"/g))assert.ok(fs.existsSync(path.join(root,match[1])));
@@ -176,9 +177,10 @@ test('all nine pages have valid references, mana indicators and no previous worl
     assert.doesNotMatch(html,/Ведьмак|ведьмач|Оксенфурт|Скеллиге|Игни|Квен|Ласточка|энерги/i);
   }
 });
-function renderPage(page,{classId,enemy}={}){
+function renderPage(page,{classId,enemy,configure}={}){
   const {context,storage,api,game,data}=setup({classId});
   if(enemy){game.action('leaveCity');game.action('explore');}
+  if(configure){configure(game.state,data);storage.setItem(api.KEY,JSON.stringify(game.state));}
   const html=read(page+'.html'),nodes=new Map(),handlers={};
   for(const match of html.matchAll(/id="([^"]+)"/g))nodes.set(match[1],{style:{},addEventListener(){}});
   context.document={getElementById:id=>nodes.get(id)||null,querySelectorAll:()=>[],addEventListener:(type,fn)=>{handlers[type]=fn;},body:{dataset:{page}}};
@@ -213,4 +215,117 @@ test('chosen classes render every page; combat uses the same drop probabilities 
       assert.ok(html.includes(String(drop.chance*100)+' %'));
     }
   }
+});
+function fillRecipe(game,recipe){
+  game.state.materials={...recipe.ingredients};game.state.gold=recipe.gold;
+  game.state.level=Math.max(game.state.level,recipe.level);
+}
+test('every recipe is reachable using ingredients available at its required level',()=>{
+  const {data}=setup();
+  for(const recipe of Object.values(data.recipes)){
+    assert.ok(data.guilds[recipe.guildId]);assert.ok(['weapon','armor'].includes(data.items[recipe.itemId].type));
+    for(const [id,count] of Object.entries(recipe.ingredients)){
+      assert.ok(data.materials[id]);assert.ok(Number.isInteger(count)&&count>0);
+      assert.ok(data.zones.some(zone=>zone.min<=recipe.level&&zone.enemies.some(enemyId=>data.enemies[enemyId].drops.some(drop=>drop.itemId===id))),id);
+    }
+  }
+});
+test('all twelve recipes create the intended item and consume exactly their listed ingredients and fee',()=>{
+  const {data}=setup();assert.equal(Object.keys(data.recipes).length,12);
+  for(const [recipeId,recipe] of Object.entries(data.recipes)){
+    const classId=data.items[recipe.itemId].classId;
+    const {game,api}=setup({classId:classId==='all'?'mage':classId});
+    fillRecipe(game,recipe);game.state.materials.leather=(game.state.materials.leather||0)+7;game.state.gold+=9;
+    const before={...game.state.materials};assert.equal(game.craftStatus(recipeId).ok,true);
+    assert.equal(game.craft(recipeId),true);assert.equal(game.state.gold,9);assert.equal(game.state.crafted,1);
+    assert.equal(game.state.bag[0].id,recipe.itemId);
+    for(const [id,count] of Object.entries(before))assert.equal(game.state.materials[id],count-(recipe.ingredients[id]||0));
+    assert.ok(api.valid(game.state));
+  }
+});
+test('missing ingredients or coins never consume any resources',()=>{
+  const {game,data}=setup({classId:'warrior'}),recipe=data.recipes['forge-sword-1'];
+  fillRecipe(game,recipe);game.state.materials.fang--;
+  let before=game.exportSave();assert.equal(game.craft('forge-sword-1'),false);assert.equal(game.exportSave(),before);
+  game.state.materials.fang++;game.state.gold--;before=game.exportSave();
+  assert.equal(game.craftStatus('forge-sword-1').reason,'Не хватает монет');
+  assert.equal(game.craft('forge-sword-1'),false);assert.equal(game.exportSave(),before);
+});
+test('crafting requires city access, a chosen class, sufficient level and the matching weapon class',()=>{
+  const {game,data}=setup({classId:'warrior'});fillRecipe(game,data.recipes['make-bow-1']);
+  let before=game.exportSave();assert.equal(game.craft('make-bow-1'),false);assert.equal(game.exportSave(),before);
+  fillRecipe(game,data.recipes['forge-sword-2']);game.state.level=1;before=game.exportSave();
+  assert.equal(game.craft('forge-sword-2'),false);assert.equal(game.exportSave(),before);
+  fillRecipe(game,data.recipes['forge-sword-1']);game.action('leaveCity');before=game.exportSave();
+  assert.equal(game.craft('forge-sword-1'),false);assert.equal(game.exportSave(),before);
+  game.action('explore');before=game.exportSave();assert.equal(game.craft('forge-sword-1'),false);assert.equal(game.exportSave(),before);
+  const {game:pending}=setup();assert.equal(pending.craft('forge-sword-1'),false);
+  assert.equal(pending.craft('constructor'),false);
+});
+test('a repeated craft with spent ingredients cannot duplicate an item; the new item can be equipped',()=>{
+  const {game,data,storage,api}=setup({classId:'warrior'});fillRecipe(game,data.recipes['forge-sword-1']);
+  assert.equal(game.craft('forge-sword-1'),true);assert.equal(game.craft('forge-sword-1'),false);
+  assert.equal(game.state.bag.length,1);assert.equal(game.state.gold,0);
+  const loaded=api.create({storage});assert.equal(loaded.state.crafted,1);assert.equal(loaded.state.materials.iron,0);
+  const before=loaded.strength();assert.equal(loaded.equip(0),true);assert.equal(loaded.strength(),before+2);
+});
+test('version 4 saves keep class, equipment and combat while adding the ingredient store',()=>{
+  const {game,data,api,storage}=setup({classId:'mage'});
+  const old=JSON.parse(game.exportSave()).state;
+  old.schemaVersion=4;delete old.materials;delete old.crafted;old.bag=[data.makeItem('staff-1')];
+  old.zone=0;old.enemy={id:'goblin',hp:12};old.gold=91;old.mana=8;
+  old.lastResult={enemyId:'wolf',gold:6,xp:9,drops:['bow-1']};
+  storage.setItem(api.KEY,JSON.stringify(old));const loaded=api.create({storage});
+  assert.equal(loaded.state.schemaVersion,5);assert.equal(loaded.state.classId,'mage');
+  assert.equal(loaded.state.bag[0].id,'staff-1');assert.equal(loaded.state.enemy.hp,12);
+  assert.equal(loaded.state.gold,91);assert.equal(loaded.state.mana,8);
+  assert.equal(Object.keys(loaded.state.materials).length,0);assert.equal(loaded.state.crafted,0);
+  assert.equal(loaded.state.lastResult,null);assert.ok(api.valid(loaded.state));
+});
+test('ingredient quantities and created items survive export, import and reload',()=>{
+  const {game,data,api}=setup({classId:'archer'});fillRecipe(game,data.recipes['make-bow-1']);
+  game.state.materials.crystal=5;game.craft('make-bow-1');
+  const storage=memoryStorage(),other=api.create({storage});other.importSave(game.exportSave());
+  assert.equal(other.state.bag[0].id,'bow-1');assert.equal(other.state.materials.crystal,5);
+  assert.equal(api.create({storage}).state.crafted,1);
+  const bad=JSON.parse(other.exportSave());bad.state.materials.iron=-1;const before=other.exportSave();
+  assert.throws(()=>other.importSave(JSON.stringify(bad)));assert.equal(other.exportSave(),before);
+  bad.state.materials.iron=1.5;assert.throws(()=>other.importSave(JSON.stringify(bad)));
+  delete bad.state.materials.iron;bad.state.materials.unknown=1;assert.throws(()=>other.importSave(JSON.stringify(bad)));
+});
+test('a complete hunt-to-craft route creates a sword without any direct equipment drop',()=>{
+  let random=0;const {game,storage,api}=setup({classId:'warrior',random:()=>random});
+  game.action('leaveCity');
+  for(const id of ['goblin','goblin','wolf','wolf']){
+    random=id==='goblin'?0.9:0;game.action('explore');assert.equal(game.state.enemy.id,id);random=0;
+    while(game.state.enemy)game.action('hit');
+    assert.equal(game.state.bag.length,0);
+  }
+  assert.equal(game.state.materials.iron,4);assert.equal(game.state.materials.fang,2);
+  game.action('enterCity');const gold=game.state.gold;
+  assert.equal(game.craft('forge-sword-1'),true);assert.equal(game.state.gold,gold-8);
+  assert.equal(game.state.materials.iron,0);assert.equal(game.state.materials.fang,0);assert.equal(game.state.materials.wood,2);
+  assert.equal(api.create({storage}).state.bag[0].id,'sword-1');
+});
+test('guild UI shows materials, source enemies and a working Create button',()=>{
+  const {nodes,handlers,storage,api}=renderPage('guilds',{classId:'warrior',configure:(state,data)=>{
+    state.materials={...data.recipes['forge-sword-1'].ingredients};state.gold=8;
+  }});
+  assert.ok(nodes.get('guildList').innerHTML.includes('Гильдия кузнецов'));
+  assert.ok(nodes.get('guildList').innerHTML.includes('Гильдия следопытов'));
+  assert.ok(nodes.get('guildList').innerHTML.includes('Круг чародеев'));
+  assert.ok(nodes.get('guildList').innerHTML.includes('Лесной волк'));
+  assert.ok(nodes.get('guildList').innerHTML.includes('Гоблин-разбойник'));
+  assert.match(nodes.get('guildList').innerHTML,/data-recipe="forge-sword-1" >⚒️ Создать/);
+  handlers.click({target:{closest:()=>({disabled:false,dataset:{recipe:'forge-sword-1'}})}});
+  const next=api.create({storage});assert.equal(next.state.bag[0].id,'sword-1');assert.equal(next.state.materials.fang,0);
+  assert.match(nodes.get('feedback').textContent,/Создано: Железный меч/);
+  assert.match(nodes.get('guildList').innerHTML,/data-recipe="forge-sword-1" disabled/);
+});
+test('city provides guild entrances; outside the city all recipes stay locked',()=>{
+  const {nodes:city}=renderPage('city',{classId:'warrior'});
+  for(const id of ['smiths','rangers','arcanists'])assert.ok(city.get('cityGuilds').innerHTML.includes('guilds.html#guild-'+id));
+  const {nodes}=renderPage('guilds',{classId:'warrior',configure:state=>{state.zone=0;}});
+  assert.match(nodes.get('guildLocation').innerHTML,/только в городе/);
+  assert.match(nodes.get('guildList').innerHTML,/data-recipe="forge-sword-1" disabled>Вернись в Светоград/);
 });
