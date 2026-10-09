@@ -31,7 +31,7 @@ server.on('error',err=>{
 });
 server.listen(port,host,()=>{
   const url=`http://localhost:${port}`;
-  console.log(`Witcher: Hunters Path\nOpen ${url}\nKeep this window open. Ctrl+C to stop.`);
+  console.log(`Heroes Path\nOpen ${url}\nKeep this window open. Ctrl+C to stop.`);
   if(host==='0.0.0.0')console.log('LAN mode: use your computer LAN IP and this port on your phone.');
   if(process.argv.includes('--open')){
     const platform=process.platform;

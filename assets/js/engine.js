@@ -1,189 +1,259 @@
 'use strict';
 window.GameEngine = (() => {
-  const KEY = 'witcher-hunters-path-fan-v2';
-  const { zones, loot, CITY_ZONE } = window.GameData;
-  const integer = (v, min = 0, max = 100000000) => Number.isSafeInteger(v) && v >= min && v <= max;
-  const text = v => typeof v === 'string' && v.length > 0 && v.length < 1500;
-  const item = (v, type) => v && ['weapon', 'armor'].includes(v.type) && (!type || v.type === type) && text(v.name) && integer(v.bonus);
+  const KEY='heroes-path-rpg-v4';
+  const LEGACY_KEY='witcher-hunters-path-fan-v2'; // Read-only migration from the previous prototype.
+  const {classes,items,enemies,zones,CITY_ZONE,makeItem}=window.GameData;
+  const known=(obj,key)=>typeof key==='string'&&Object.hasOwn(obj,key);
+  const integer=(v,min=0,max=100000000)=>Number.isSafeInteger(v)&&v>=min&&v<=max;
+  const text=v=>typeof v==='string'&&v.length>0&&v.length<1500;
+  const clone=v=>JSON.parse(JSON.stringify(v));
+  const fresh=()=>({
+    schemaVersion:4,classId:null,level:1,xp:0,maxHp:1,hp:1,maxMana:0,mana:0,attack:0,defense:0,
+    gold:18,potions:2,manaPotions:1,kills:0,contractsCompleted:0,zone:CITY_ZONE,enemy:null,
+    shield:false,contract:null,equipment:{weapon:null,armor:null},bag:[],migration:null,lastResult:null,
+    log:['🏰 Добро пожаловать в Светоград. Выбери класс, чтобы начать свою историю.']
+  });
+  function validItem(it,type) {
+    return !!it&&known(items,it.id)&&['weapon','armor'].includes(items[it.id].type)&&
+      it.type===items[it.id].type&&(!type||it.type===type)&&integer(it.bonus)&&text(it.name)&&
+      it.classId===items[it.id].classId&&
+      (it.id.startsWith('legacy-')||it.bonus===items[it.id].bonus);
+  }
   function valid(s) {
-    if (!s || typeof s !== 'object') return false;
-    for (const k of ['xp','attack','defense','gold','potions','kills','contractsCompleted']) if (!integer(s[k])) return false;
-    if (!integer(s.level,1,100000) || !integer(s.maxHp,1) || !integer(s.hp,1,s.maxHp) || !integer(s.maxEnergy,1,1000) || !integer(s.energy,0,s.maxEnergy)) return false;
-    if (!integer(s.zone,0,zones.length-1) || s.level < zones[s.zone].min || typeof s.shield !== 'boolean') return false;
-    if (!s.equipment || !item(s.equipment.weapon,'weapon') || !item(s.equipment.armor,'armor')) return false;
-    if (!Array.isArray(s.bag) || s.bag.length > 5000 || !s.bag.every(v=>item(v))) return false;
-    if (!Array.isArray(s.log) || s.log.length > 18 || !s.log.every(text)) return false;
-    if (s.enemy !== null) {
-      const e = s.enemy;
-      if (!e || !text(e.name) || !text(e.icon) || !text(e.weak) || !integer(e.maxHp,1) || !integer(e.hp,1,e.maxHp) || !integer(e.attack,1) || !integer(e.gold) || !integer(e.xp)) return false;
-      if (!zones[s.zone].enemies.some(t=>t.name===e.name)) return false;
+    if(!s||s.schemaVersion!==4||!(s.classId===null||known(classes,s.classId)))return false;
+    for(const key of ['xp','attack','defense','gold','potions','manaPotions','kills','contractsCompleted'])if(!integer(s[key]))return false;
+    if(!integer(s.level,1,100000)||!integer(s.maxHp,1)||!integer(s.hp,1,s.maxHp)||!integer(s.maxMana,0)||!integer(s.mana,0,s.maxMana))return false;
+    if(!integer(s.zone,0,zones.length-1)||s.level<zones[s.zone].min||typeof s.shield!=='boolean')return false;
+    if(!s.equipment)return false;
+    for(const type of ['weapon','armor']){
+      const it=s.equipment[type];
+      if(s.classId===null&&it===null)continue;
+      if(!validItem(it,type)||s.classId&&it.classId!=='all'&&it.classId!==s.classId)return false;
     }
-    if (s.contract !== null) {
-      const c = s.contract;
-      if (!c || !integer(c.zone,0,zones.length-1) || !zones[c.zone].enemies.some(e=>e.name===c.target) || !integer(c.gold) || !integer(c.xp)) return false;
+    if(!Array.isArray(s.bag)||s.bag.length>5000||!s.bag.every(it=>validItem(it)))return false;
+    if(!Array.isArray(s.log)||s.log.length>18||!s.log.every(text))return false;
+    if(s.enemy!==null&&(!s.enemy||!known(enemies,s.enemy.id)||!zones[s.zone].enemies.includes(s.enemy.id)||!integer(s.enemy.hp,1,enemies[s.enemy.id].hp)))return false;
+    if(s.contract!==null){
+      const c=s.contract;
+      if(!c||!integer(c.zone,0,zones.length-1)||!zones[c.zone].enemies.includes(c.targetId)||!integer(c.gold)||!integer(c.xp))return false;
+    }
+    if(s.migration!==null&&(!s.migration||!['hpRatio','manaRatio'].every(k=>Number.isFinite(s.migration[k])&&s.migration[k]>=0&&s.migration[k]<=1)))return false;
+    if(s.lastResult!==null){
+      const r=s.lastResult;
+      if(!r||!known(enemies,r.enemyId)||!integer(r.gold)||!integer(r.xp)||!Array.isArray(r.drops)||r.drops.length>10||!r.drops.every(id=>known(items,id)))return false;
     }
     return true;
   }
-  function create({storage, random = Math.random} = {}) {
-    let storageAvailable = true;
-    if (storage === undefined) {
-      try { storage = window.localStorage; } catch { storage = null; storageAvailable = false; }
+  const legacyNames=[
+    ['Утопец','Гуль'],['Полуденница','Туманник'],['Накер','Водяная баба'],['Сирена','Ледяной тролль'],[]
+  ];
+  function migrate(old) {
+    if(!old||!integer(old.level,1,100000)||!integer(old.zone,0,4)||old.level<zones[old.zone].min)throw Error('Некорректное сохранение.');
+    for(const k of ['xp','attack','defense','gold','potions','kills','contractsCompleted'])if(!integer(old[k]))throw Error('Некорректное сохранение.');
+    if(!integer(old.maxHp,1)||!integer(old.hp,1,old.maxHp)||!integer(old.maxEnergy,1)||!integer(old.energy,0,old.maxEnergy))throw Error('Некорректное сохранение.');
+    const convertItem=(it,type)=>{
+      if(!it||!['weapon','armor'].includes(it.type)||(type&&it.type!==type)||!integer(it.bonus))throw Error('Некорректное снаряжение.');
+      return makeItem('legacy-'+it.type,it.bonus);
+    };
+    if(!old.equipment||!Array.isArray(old.bag)||old.bag.length>5000)throw Error('Некорректное снаряжение.');
+    const game=fresh();
+    for(const k of ['level','xp','attack','defense','gold','potions','kills','contractsCompleted','zone','hp','maxHp'])game[k]=old[k];
+    game.mana=old.energy;game.maxMana=old.maxEnergy;
+    game.equipment={weapon:convertItem(old.equipment.weapon,'weapon'),armor:convertItem(old.equipment.armor,'armor')};
+    game.bag=old.bag.map(it=>convertItem(it));
+    game.migration={hpRatio:old.hp/old.maxHp,manaRatio:old.energy/old.maxEnergy};
+    if(old.enemy){
+      const index=legacyNames[old.zone].indexOf(old.enemy.name);
+      const id=zones[old.zone].enemies[index];
+      if(!id||!integer(old.enemy.hp,1,enemies[id].hp))throw Error('Некорректный противник.');
+      game.enemy={id,hp:old.enemy.hp};
     }
-    const rnd = (a,b) => Math.floor(random()*(b-a+1))+a;
-const fresh = () => ({level:1,xp:0,maxHp:35,hp:35,energy:3,maxEnergy:3,attack:5,defense:0,gold:18,potions:2,kills:0,contractsCompleted:0,zone:CITY_ZONE,enemy:null,shield:false,contract:null,
-  equipment:{weapon:{name:'Потёртый серебряный меч',type:'weapon',bonus:2},armor:{name:'Куртка Школы Волка',type:'armor',bonus:1}},bag:[],log:['🐺 Твоя история начинается в Оксенфурте. Ты стоишь на городской площади. Подготовься и возьми первый контракт.']});
-
-    let game = fresh();
-    try {
-      const raw = storage ? storage.getItem(KEY) : null;
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (valid(parsed)) game = parsed;
-        else game.log.unshift('Повреждённое сохранение: начата новая история.');
-      }
-    } catch { game.log.unshift('Сохранение не удалось прочитать: начата новая история.'); }
-    const listeners = [];
-    const xpNeed = () => 16 + (game.level-1)*11;
-    const strength = () => game.attack + game.equipment.weapon.bonus;
-    const armor = () => game.defense + game.equipment.armor.bonus;
-    const note = str => { game.log.unshift(str); game.log = game.log.slice(0,18); };
-    function commit() {
-      try {
-        if (!storage) throw new Error('Storage unavailable');
-        storage.setItem(KEY,JSON.stringify(game));
-        storageAvailable = true;
-      } catch { storageAvailable = false; }
+    if(old.contract){
+      const c=old.contract;
+      if(!integer(c.zone,0,3)||!integer(c.gold)||!integer(c.xp))throw Error('Некорректный контракт.');
+      const id=zones[c.zone].enemies[legacyNames[c.zone].indexOf(c.target)];
+      if(!id)throw Error('Некорректный контракт.');
+      game.contract={zone:c.zone,targetId:id,gold:c.gold,xp:c.xp};
+    }
+    game.log=['📖 Прогресс перенесён в новый мир: уровень, монеты, предметы и задания сохранены. Выбери класс.'];
+    if(!valid(game))throw Error('Не удалось перенести сохранение.');
+    return game;
+  }
+  function parseSave(raw) {
+    const parsed=JSON.parse(raw);
+    let state=parsed;
+    if(parsed&&Object.hasOwn(parsed,'format')){
+      if(!['heroes-path-save','hunters-path-save'].includes(parsed.format)||parsed.version!==1)throw Error('Неподдерживаемая версия сохранения.');
+      state=parsed.state;
+    }
+    if(state&&state.schemaVersion===4){
+      if(!valid(state))throw Error('Некорректное сохранение.');
+      return clone(state);
+    }
+    return migrate(state);
+  }
+  function rollDrops(enemyId,random=Math.random) {
+    if(!known(enemies,enemyId))return [];
+    return enemies[enemyId].drops.filter(drop=>random()<drop.chance).map(drop=>drop.itemId);
+  }
+  function create({storage,random=Math.random}={}) {
+    let storageAvailable=true;
+    if(storage===undefined){try{storage=window.localStorage;}catch{storage=null;}}
+    let game=fresh();
+    try{
+      const current=storage&&storage.getItem(KEY);
+      const legacy=!current&&storage&&storage.getItem(LEGACY_KEY);
+      if(current||legacy)game=parseSave(current||legacy);
+    }catch{game.log.unshift('Сохранение повреждено или недоступно. Можно загрузить резервную копию в журнале.');}
+    const listeners=[];
+    const rnd=(a,b)=>Math.floor(random()*(b-a+1))+a;
+    const note=message=>{game.log.unshift(message);game.log=game.log.slice(0,18);};
+    const heroClass=()=>classes[game.classId]||null;
+    const xpNeed=()=>16+(game.level-1)*11;
+    const strength=()=>game.attack+(game.equipment.weapon?game.equipment.weapon.bonus:0);
+    const armor=()=>game.defense+(game.equipment.armor?game.equipment.armor.bonus:0);
+    function commit(){
+      try{if(!storage)throw Error();storage.setItem(KEY,JSON.stringify(game));storageAvailable=true;}catch{storageAvailable=false;}
       listeners.forEach(fn=>fn());
     }
-function levelUp(){
-  while(game.xp >= xpNeed()){
-    const need=xpNeed();game.xp-=need;game.level++;game.maxHp+=8;game.attack+=2;game.hp=game.maxHp;game.energy=game.maxEnergy;
-    note(`⭐ Новый уровень ${game.level}! Атака +2, здоровье +8. Силы восстановлены.`);
-  }
-}
-function win(){
-  const e=game.enemy;game.gold+=e.gold;game.xp+=e.xp;game.kills++;
-  note(`🏆 ${e.name} повержен. +${e.xp} опыта, +${e.gold} крон.`);
-  if(game.contract&&game.contract.zone===game.zone&&game.contract.target===e.name){
-    game.gold+=game.contract.gold;game.xp+=game.contract.xp;game.contractsCompleted++;
-    note(`📜 Контракт выполнен! Получено ${game.contract.gold} крон и ${game.contract.xp} опыта.`);game.contract=null;
-  }
-  if(random()<.42){
-    const candidates=loot.filter(it=>it.min<=game.level&&(it.type==='weapon'?it.bonus>=game.equipment.weapon.bonus:it.bonus>=game.equipment.armor.bonus));
-    if(candidates.length){const it={...candidates[rnd(0,candidates.length-1)]};delete it.min;game.bag.push(it);note(`🎁 Добыча: «${it.name}» (+${it.bonus})!`);}
-  }
-  game.enemy=null;game.shield=false;levelUp();
-}
-function enemyTurn(){
-  if(!game.enemy)return;
-  const e=game.enemy;
-  if(game.shield){game.shield=false;note(`🛡️ Квен поглотил удар чудовища «${e.name}»!`);return;}
-  const dmg=Math.max(1,rnd(e.attack-2,e.attack+2)-armor());game.hp=Math.max(0,game.hp-dmg);
-  note(`💢 ${e.name} наносит ${dmg} урона.`);
-  if(game.hp===0){
-    const lost=Math.min(game.gold,6);game.gold-=lost;game.hp=Math.max(1,Math.floor(game.maxHp*.6));game.energy=game.maxEnergy;game.enemy=null;game.shield=false;game.zone=CITY_ZONE;
-    note(`☠️ Ведьмак был побеждён. Потеряно ${lost} крон. Ты очнулся в таверне Оксенфурта. Контракт по-прежнему ждёт тебя.`);
-  }
-}
-function startFight(template){
-  game.enemy={...template,maxHp:template.hp};game.shield=false;note(`🐺 Медальон дрожит: впереди ${template.name}!`);
-}
-function action(name){
-  if(name==='explore'){
-    if(game.enemy)return;
-    const z=zones[game.zone];
-    if(!z.enemies.length){note('🏰 В городе безопасно. Для охоты выйди за ворота.');return commit();}
-    startFight(z.enemies[rnd(0,z.enemies.length-1)]);
-  } else if(name==='hit'||name==='power'||name==='igni'||name==='quen'){
-    if(!game.enemy)return;
-    if(name==='hit'){
-      const dmg=Math.max(1,rnd(strength()-2,strength()+2));game.enemy.hp=Math.max(0,game.enemy.hp-dmg);game.energy=Math.min(game.maxEnergy,game.energy+1);
-      note(`⚔️ Быстрый удар: ${dmg} урона, +1 энергия знаков.`);
-    } else if(name==='power'){
-      if(random()<.27)note('💨 Чудовище увернулось от сильного удара!');
-      else{const dmg=Math.max(1,rnd(strength()+1,strength()+6));game.enemy.hp=Math.max(0,game.enemy.hp-dmg);note(`💥 Сильный удар: ${dmg} урона.`);}
-    } else if(name==='igni'){
-      if(game.energy<2)return;game.energy-=2;const dmg=rnd(5+game.level,8+game.level)+(game.enemy.weak==='Игни'?5:0);game.enemy.hp=Math.max(0,game.enemy.hp-dmg);
-      note(`🔥 Игни обжигает врага: ${dmg} урона${game.enemy.weak==='Игни'?' (слабость чудовища!)':''}.`);
-    } else if(name==='quen'){
-      if(game.energy<2||game.shield)return;game.energy-=2;game.shield=true;note('🛡️ Ты накладываешь знак Квен. Следующий удар врага будет поглощён.');
+    function selectClass(id){
+      if(game.classId!==null||!known(classes,id))return false;
+      const c=classes[id],level=game.level-1;
+      game.classId=id;game.maxHp=c.hp+level*c.hpGrowth;game.maxMana=c.mana+level*c.manaGrowth;
+      game.attack=c.attack+level*c.attackGrowth;game.defense=c.defense;
+      game.hp=game.migration?Math.max(1,Math.round(game.maxHp*game.migration.hpRatio)):game.maxHp;
+      game.mana=game.migration?Math.round(game.maxMana*game.migration.manaRatio):game.maxMana;
+      if(!game.equipment.weapon)game.equipment.weapon=makeItem(c.weapon);
+      if(!game.equipment.armor)game.equipment.armor=makeItem('armor-0');
+      game.migration=null;
+      note(c.icon+' Твой класс: '+c.name+'. Приготовься к приключению.');commit();return true;
     }
-    if(game.enemy.hp===0)win();else enemyTurn();
-  } else if(name==='potion'){
-    if(game.potions<1||game.hp>=game.maxHp)return;
-    game.potions--;const heal=Math.min(20+game.level*2,game.maxHp-game.hp);game.hp+=heal;note(`🧪 «Ласточка» восстановила ${heal} здоровья.`);
-    if(game.enemy)enemyTurn();
-  } else if(name==='flee'){
-    if(!game.enemy)return;
-    if(random()<.8){note(`🏃 Ты отступил от чудовища «${game.enemy.name}».`);game.enemy=null;game.shield=false;}
-    else{note('🚫 Не удалось отступить!');enemyTurn();}
-  } else if(name==='rest'){
-    if(game.enemy){note('Сначала закончи сражение.');return commit();}
-    if(game.hp===game.maxHp&&game.energy===game.maxEnergy){note('Ты уже полностью отдохнул.');return commit();}
-    if(game.gold<5){note('Нужно 5 крон для отдыха.');return commit();}
-    game.gold-=5;game.hp=game.maxHp;game.energy=game.maxEnergy;game.shield=false;note('🔥 Сон у очага восстановил здоровье и энергию знаков.');
-  } else if(name==='buy'){
-    if(game.enemy){note('В схватке торговцы не помогают.');return commit();}
-    if(game.gold<10){note('Для покупки «Ласточки» нужно 10 крон.');return commit();}
-    game.gold-=10;game.potions++;note('🧪 Куплена «Ласточка».');
-  } else if(name==='accept'){
-    if(game.enemy||game.contract)return;
-    const contractZone=game.zone===CITY_ZONE?0:game.zone;
-    const z=zones[contractZone],template=z.enemies[rnd(0,z.enemies.length-1)];
-    game.contract={zone:contractZone,target:template.name,gold:12+contractZone*10,xp:7+contractZone*5};
-    note(`📜 Новый контракт: уничтожить чудовище «${template.name}» в локации ${z.name}.`);
-  } else if(name==='track'){
-    if(game.enemy||!game.contract||game.contract.zone!==game.zone)return;
-    const template=zones[game.zone].enemies.find(e=>e.name===game.contract.target);
-    if(template)startFight(template);
-  } else if(name==='abandon'){
-    if(game.enemy||!game.contract)return;note(`📜 Контракт на «${game.contract.target}» отменён.`);game.contract=null;
-  } else if(name==='enterCity'){
-    return chooseZone(CITY_ZONE);
-  } else if(name==='leaveCity'){
-    if(game.zone!==CITY_ZONE||game.enemy)return;
-    return chooseZone(game.contract?game.contract.zone:0);
-  } else if(name==='travelContract'){
-    if(!game.contract||game.enemy)return;
-    return chooseZone(game.contract.zone);
-  }
-  commit();
-}
-
-    function chooseZone(idx) {
-      if (game.enemy || !zones[idx] || game.level < zones[idx].min) return;
-      game.zone=idx;note(idx===CITY_ZONE?'🏰 Ты вернулся на городскую площадь Оксенфурта.':`🗺️ Ты прибыл в ${zones[idx].name}.`);commit();
+    function chooseZone(index){
+      if(!game.classId||game.enemy||!integer(index,0,zones.length-1)||game.level<zones[index].min)return false;
+      game.zone=index;game.lastResult=null;
+      note(index===CITY_ZONE?'🏰 Ты вернулся на площадь Светограда.':'🗺️ Ты прибыл в '+zones[index].name+'.');commit();return true;
     }
-    function equip(idx) {
-      if (game.enemy) { note('В бою нельзя менять снаряжение.');commit();return; }
-      const found = game.bag[idx]; if(!found) return;
-      game.bag.splice(idx,1);game.bag.push(game.equipment[found.type]);game.equipment[found.type]=found;
-      note(`✨ Снаряжено: «${found.name}».`);commit();
+    function equip(index){
+      if(!game.classId||game.enemy)return false;
+      const it=game.bag[index];if(!it)return false;
+      if(it.classId!=='all'&&it.classId!==game.classId){note('Этот предмет предназначен для класса «'+classes[it.classId].name+'».');commit();return false;}
+      game.bag.splice(index,1);game.bag.push(game.equipment[it.type]);game.equipment[it.type]=it;
+      note('✨ Надето: '+it.name+'.');commit();return true;
     }
-    function importSave(raw) {
-      const parsed = JSON.parse(raw);
-      const candidate = parsed && parsed.format === 'hunters-path-save' ? parsed.state : parsed;
-      if (parsed && parsed.format === 'hunters-path-save' && parsed.version !== 1) throw new Error('Неподдерживаемая версия сохранения.');
-      if (!valid(candidate)) throw new Error('Файл не содержит корректного сохранения игры.');
-      game = JSON.parse(JSON.stringify(candidate));
-      note('📖 Сохранение загружено. История продолжается.');commit();
+    function levelUp(){
+      const c=heroClass();
+      while(game.xp>=xpNeed()){
+        game.xp-=xpNeed();game.level++;game.maxHp+=c.hpGrowth;game.maxMana+=c.manaGrowth;game.attack+=c.attackGrowth;
+        game.hp=game.maxHp;game.mana=game.maxMana;
+        note('⭐ Уровень '+game.level+'! Здоровье и мана восстановлены.');
+      }
     }
-    function reload() {
-      try {
-        const candidate = JSON.parse(storage.getItem(KEY));
-        if (valid(candidate)) { game=candidate;listeners.forEach(fn=>fn()); }
-      } catch {}
+    function win(){
+      const id=game.enemy.id,e=enemies[id];
+      let gold=e.gold,xp=e.xp;game.kills++;
+      if(game.contract&&game.contract.zone===game.zone&&game.contract.targetId===id){
+        gold+=game.contract.gold;xp+=game.contract.xp;game.contractsCompleted++;game.contract=null;
+        note('📜 Контракт выполнен. Награда начислена.');
+      }
+      game.gold+=gold;game.xp+=xp;
+      const drops=rollDrops(id,random);
+      for(const itemId of drops){
+        const it=items[itemId];
+        if(it.type==='potion'){if(it.effect==='health')game.potions++;else game.manaPotions++;}
+        else game.bag.push(makeItem(itemId));
+        note('🎁 Добыча: '+it.name+'.');
+      }
+      game.lastResult={enemyId:id,gold,xp,drops};game.enemy=null;game.shield=false;
+      note('🏆 '+e.name+' побеждён. +'+xp+' опыта, +'+gold+' монет.');levelUp();
+    }
+    function enemyTurn(){
+      if(!game.enemy)return;
+      const e=enemies[game.enemy.id];
+      if(game.shield){game.shield=false;note('🛡️ '+heroClass().guard+' поглотил атаку.');return;}
+      const damage=Math.max(1,rnd(e.attack-2,e.attack+2)-armor());
+      game.hp=Math.max(0,game.hp-damage);note('💢 '+e.name+' наносит '+damage+' урона.');
+      if(game.hp===0){
+        const lost=Math.min(6,game.gold);game.gold-=lost;game.hp=Math.max(1,Math.floor(game.maxHp*0.6));game.mana=game.maxMana;
+        game.enemy=null;game.shield=false;game.zone=CITY_ZONE;game.lastResult=null;
+        note('☠️ Поражение. Потеряно '+lost+' монет. Ты очнулся в таверне Светограда.');
+      }
+    }
+    function startFight(id){
+      game.enemy={id,hp:enemies[id].hp};game.shield=false;game.lastResult=null;
+      note('⚔️ Тебе преграждает путь: '+enemies[id].name+'.');
+    }
+    function action(name){
+      if(!game.classId)return;
+      const c=heroClass();
+      if(name==='enterCity')return chooseZone(CITY_ZONE);
+      if(name==='leaveCity'){if(game.zone!==CITY_ZONE)return false;return chooseZone(game.contract?game.contract.zone:0);}
+      if(name==='travelContract'){if(!game.contract)return false;return chooseZone(game.contract.zone);}
+      if(name==='explore'){
+        if(game.enemy)return;
+        const ids=zones[game.zone].enemies;
+        if(!ids.length){note('🏰 В городе безопасно. Для охоты выйди за ворота.');return commit();}
+        startFight(ids[rnd(0,ids.length-1)]);
+      }else if(['hit','skill','guard'].includes(name)){
+        if(!game.enemy)return;
+        let damage=0;
+        if(name==='hit'){
+          damage=Math.max(1,rnd(strength()-2,strength()+2));game.mana=Math.min(game.maxMana,game.mana+1);
+          note(c.icon+' '+c.basic+': '+damage+' урона, +1 мана.');
+        }else if(name==='skill'){
+          if(game.mana<c.skillCost)return;
+          game.mana-=c.skillCost;
+          if(game.classId==='warrior')damage=strength()+6+game.level;
+          else if(game.classId==='archer')damage=Math.max(1,rnd(strength()-1,strength()+1))+Math.max(1,rnd(strength()-1,strength()+1));
+          else damage=rnd(7+game.level*3,10+game.level*3)+(enemies[game.enemy.id].weakness==='fire'?4:0);
+          note('✨ '+c.skill+': '+damage+' урона, −'+c.skillCost+' маны.');
+        }else{
+          if(game.mana<c.guardCost||game.shield)return;
+          game.mana-=c.guardCost;game.shield=true;note('🛡️ '+c.guard+': следующая атака будет поглощена.');
+        }
+        game.enemy.hp=Math.max(0,game.enemy.hp-damage);
+        if(game.enemy.hp===0)win();else enemyTurn();
+      }else if(name==='potion'||name==='manaPotion'){
+        const health=name==='potion';
+        if(health?(game.potions<1||game.hp===game.maxHp):(game.manaPotions<1||game.mana===game.maxMana))return;
+        if(health){game.potions--;const value=Math.min(20+game.level*2,game.maxHp-game.hp);game.hp+=value;note('🧪 Зелье лечения: +'+value+' здоровья.');}
+        else{game.manaPotions--;const value=Math.min(8+game.level*2,game.maxMana-game.mana);game.mana+=value;note('🔷 Зелье маны: +'+value+' маны.');}
+        if(game.enemy)enemyTurn();
+      }else if(name==='flee'){
+        if(!game.enemy)return;
+        if(random()<0.8){note('🏃 Ты отступил от противника.');game.enemy=null;game.shield=false;}else{note('Не удалось отступить.');enemyTurn();}
+      }else if(name==='rest'){
+        if(game.enemy||game.gold<5||game.hp===game.maxHp&&game.mana===game.maxMana)return;
+        game.gold-=5;game.hp=game.maxHp;game.mana=game.maxMana;game.shield=false;note('🍺 Отдых восстановил здоровье и ману.');
+      }else if(name==='buy'||name==='buyMana'){
+        const cost=name==='buy'?10:12;if(game.enemy||game.gold<cost)return;
+        game.gold-=cost;if(name==='buy')game.potions++;else game.manaPotions++;
+        note('🧪 Куплено '+(name==='buy'?'зелье лечения.':'зелье маны.'));
+      }else if(name==='accept'){
+        if(game.enemy||game.contract)return;
+        const zone=game.zone===CITY_ZONE?0:game.zone,ids=zones[zone].enemies;
+        game.contract={zone,targetId:ids[rnd(0,ids.length-1)],gold:12+zone*10,xp:7+zone*5};
+        note('📜 Новый контракт: '+enemies[game.contract.targetId].name+'. Место: '+zones[zone].name+'.');
+      }else if(name==='track'){
+        if(game.enemy||!game.contract||game.contract.zone!==game.zone)return;
+        startFight(game.contract.targetId);
+      }else if(name==='abandon'){
+        if(game.enemy||!game.contract)return;
+        game.contract=null;note('📜 Контракт отменён.');
+      }else return;
+      commit();
+    }
+    function reload(){
+      try{const next=JSON.parse(storage.getItem(KEY));if(valid(next)){game=next;listeners.forEach(fn=>fn());}}catch{}
     }
     commit();
     return {
-      get state() { return game; },
-      get storageAvailable() { return storageAvailable; },
-      action, chooseZone, equip, reload, xpNeed, strength, armor,
-      reset() { game=fresh();commit(); },
-      subscribe(fn) { listeners.push(fn); },
-      exportSave() { return JSON.stringify({format:'hunters-path-save',version:1,state:game},null,2); },
-      importSave
+      get state(){return game;},get storageAvailable(){return storageAvailable;},
+      selectClass,action,chooseZone,equip,xpNeed,strength,armor,reload,
+      subscribe(fn){listeners.push(fn);},
+      reset(){game=fresh();commit();},
+      exportSave(){return JSON.stringify({format:'heroes-path-save',version:1,state:game},null,2);},
+      importSave(raw){const next=parseSave(raw);game=next;note('📖 Сохранение загружено.');commit();}
     };
   }
-  return {create, valid, KEY};
+  return {KEY,LEGACY_KEY,create,valid,parseSave,rollDrops};
 })();
