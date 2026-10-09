@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101016">
+  <meta name="description" content="Аркантериум — ваше пространство для бизнеса, общения и идей.">
+  <title>Чаты — Аркантериум</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <script src="assets/js/storage.js" defer></script>
+  <script src="assets/js/app.js" defer></script>
+  <script src="assets/js/chats.js" defer></script>
+</head>
+<body data-page="chats">
+<a class="skip-link" href="#main">Перейти к содержимому</a>
+<header><div class="wrap bar">
+  <a class="brand" href="index.html"><span class="logo" aria-hidden="true">А</span>Аркантериум</a>
+  <button class="menu" aria-label="Открыть меню" aria-expanded="false" aria-controls="navigation">☰</button>
+  <nav class="nav" id="navigation" aria-label="Основная навигация"><a href="index.html">Главная</a><a href="profile.html">Профиль</a><a href="chats.html" aria-current="page">Чаты</a><a href="notes.html">Заметки</a><a href="files.html">Файлы</a><a href="search.html">Поиск</a><a href="login.html">Вход</a></nav>
+</div></header>
+<main class="wrap" id="main">
+<noscript><p class="panel">Для заметок, поиска и мобильного меню включите JavaScript. Все страницы доступны по ссылкам внизу.</p></noscript>
+<div class="page-heading"><a class="breadcrumb" href="index.html">← Главная</a><h1>Всегда на связи</h1><p>Пока здесь работает небольшой демонстрационный помощник.</p></div>
+<div class="columns"><section class="panel"><div class="toolbar" style="justify-content:space-between;margin-bottom:18px"><h2 style="margin:0">Помощник по сайту</h2><span class="pill">Демо</span></div>
+<div class="chat-log" id="chat-log" role="log" aria-label="Переписка с демопомощником" aria-live="polite"></div>
+<form id="chat-form" style="margin-top:22px"><label for="message">Ваше сообщение</label><input id="message" maxlength="1000" required placeholder="Как сохранить заметку?" autocomplete="off"><button class="primary" type="submit">Отправить помощнику</button></form></section>
+<aside class="panel"><h2>Попробуйте спросить</h2><div class="list"><button class="secondary" data-prompt="Как сохранить заметку?">Как сохранить заметку?</button><button class="secondary" data-prompt="Как выбрать файлы?">Как выбрать файлы?</button><button class="secondary" data-prompt="Как работает вход?">Как работает вход?</button></div><p class="hint">Ответы заранее заданы в JavaScript. Это не ИИ и не переписка с человеком. Сообщения никуда не отправляются и исчезают при обновлении страницы.</p></aside></div>
+</main>
+<footer><div class="wrap"><span>© <span id="year">2026</span> Аркантериум</span><span>Версия 2.0 · Локальное пространство</span></div><div class="wrap footer-nav" style="margin-top:12px;flex-wrap:wrap;justify-content:flex-start"><a href="index.html">Главная</a><a href="profile.html">Профиль</a><a href="chats.html" aria-current="page">Чаты</a><a href="notes.html">Заметки</a><a href="files.html">Файлы</a><a href="search.html">Поиск</a><a href="login.html">Вход</a></div></footer>
+<nav class="mobilebar" aria-label="Быстрый доступ"><a href="index.html"><span class="symbol" aria-hidden="true">⌂</span><span>Главная</span></a><a href="search.html"><span class="symbol" aria-hidden="true">⌕</span><span>Поиск</span></a><a href="notes.html"><span class="symbol" aria-hidden="true">▤</span><span>Заметки</span></a><a href="profile.html"><span class="symbol" aria-hidden="true">◎</span><span>Профиль</span></a></nav>
+</body>
+</html>

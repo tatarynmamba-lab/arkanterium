@@ -1,0 +1,10 @@
+{
+  "name": "arkanterium-js",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Многостраничный Аркантериум на обычном JavaScript",
+  "scripts": {
+    "start": "node server.js",
+    "mobile": "node server.js --lan"
+  }
+}
