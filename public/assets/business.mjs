@@ -161,5 +161,5 @@ document.addEventListener('click',e=>{
   if(button.dataset.editPost)editPost(button.dataset.editPost);
   if(button.dataset.deletePost)deletePost(button.dataset.deletePost);
 });
-api('me').then(({user})=>{if(!user){$('#account-link').href='/signin-with-chatgpt?return_to=%2Faccount.html';$('#account-link').target='_top'}}).catch(()=>{});
+api('me').then(({user})=>{if(!user){$('#account-link').href='/auth.html?return_to=%2Faccount.html';$('#account-link').target='_top'}}).catch(()=>{});
 load();
