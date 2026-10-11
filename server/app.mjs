@@ -33,7 +33,7 @@ export function createApplication({rootDir,dataDir,origin='',production=false,tr
    else if(url.pathname==='/signout-with-chatgpt')response=new Response('<!doctype html><html lang="ru"><meta charset="utf-8"><title>Выход</title><p>Чтобы выйти, используйте ссылку «Выйти из аккаунта» в личном кабинете.</p><a href="/account.html">Личный кабинет</a></html>',{headers:{'Content-Type':'text/html; charset=utf-8'}});
    else if(!['GET','HEAD'].includes(method))throw new AuthError(405,'Метод не поддерживается.');
    else {
-    const pages={'/':'catalog.html','/index.html':'catalog.html','/auth.html':'auth.html','/account.html':'account.html','/profile.html':'profile.html'};
+    const pages={'/':'catalog.html','/index.html':'catalog.html','/auth.html':'auth.html','/account.html':'account.html','/profile.html':'profile.html','/feed.html':'feed.html'};
     if(['/account.html','/profile.html'].includes(url.pathname)&&!user)response=Response.redirect(new URL('/auth.html?return_to='+encodeURIComponent(url.pathname+url.search),base),302);
     else {
      let file,mime;

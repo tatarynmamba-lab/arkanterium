@@ -43,8 +43,8 @@ function normalizeSections(input2) {
 
 // lib/api-shared.ts
 var HttpError = class extends Error {
-  constructor(status, message) {
-    super(message);
+  constructor(status, message2) {
+    super(message2);
     this.status = status;
   }
 };
@@ -154,15 +154,18 @@ async function handleBusinesses(req, user, { db, bucket }, path, readSections2) 
     return json({ id, ...data, pageUrl: "/business/" + id });
   }
   if (method === "DELETE" && path.length === 2) {
+    const appearance = await db.prepare("SELECT object_key FROM page_appearances WHERE id=?").bind("business:" + id).first();
     const media = await db.prepare("SELECT object_key FROM business_media WHERE business_id=?").bind(id).all();
-    if (media.results.length && !bucket) throw new HttpError(503, "\u0425\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0435 \u0444\u043E\u0442\u043E\u0433\u0440\u0430\u0444\u0438\u0439 \u0435\u0449\u0451 \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F.");
+    if ((media.results.length || appearance?.object_key) && !bucket) throw new HttpError(503, "\u0425\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0435 \u0444\u043E\u0442\u043E\u0433\u0440\u0430\u0444\u0438\u0439 \u0435\u0449\u0451 \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F.");
     await db.batch([
+      db.prepare("DELETE FROM page_appearances WHERE id=?").bind("business:" + id),
       db.prepare("DELETE FROM business_posts WHERE business_id=?").bind(id),
       db.prepare("DELETE FROM business_media WHERE business_id=?").bind(id),
       db.prepare("DELETE FROM business_pages WHERE business_id=?").bind(id),
       db.prepare("DELETE FROM businesses WHERE id=? AND owner_id=?").bind(id, account.userId)
     ]);
     await Promise.all(media.results.map((m) => bucket.delete(m.object_key)));
+    if (appearance?.object_key) await bucket.delete(appearance.object_key);
     return json({ ok: true });
   }
   if (path[2] === "media") {
@@ -435,6 +438,169 @@ async function handleProfile(req, user, { db, bucket }, path) {
   return json({ page: next });
 }
 
+// lib/feed-api.ts
+function message(value2, max = 5e3) {
+  if (typeof value2 !== "string" || !value2.trim() || value2.trim().length > max) throw new HttpError(400, "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0442\u0435\u043A\u0441\u0442 \u0434\u043B\u0438\u043D\u043E\u0439 \u043E\u0442 1 \u0434\u043E " + max + " \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432.");
+  return value2.trim();
+}
+async function throttle(db, owner) {
+  const now = Date.now(), key2 = "feed:" + owner + ":" + Math.floor(now / 6e4);
+  const row = await db.prepare("INSERT INTO login_limits(key,attempts,expires_at) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=attempts+1 RETURNING attempts").bind(key2, now + 12e4).first();
+  if (row.attempts > 30) throw new HttpError(429, "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u043D\u043E\u0433\u043E \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0439. \u041F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435 \u043C\u0438\u043D\u0443\u0442\u0443.");
+  await db.prepare("DELETE FROM login_limits WHERE expires_at<?").bind(now).run();
+}
+async function handleFeed(req, user, db, path, isAdmin) {
+  const method = req.method, url = new URL(req.url), id = path[1];
+  if (path.length === 1 && method === "GET") {
+    let before = Number.MAX_SAFE_INTEGER, beforeId = "~";
+    const cursor = url.searchParams.get("cursor");
+    if (cursor) {
+      try {
+        const value2 = JSON.parse(atob(cursor));
+        if (!Number.isSafeInteger(value2[0]) || typeof value2[1] !== "string" || !/^[-\w]{1,80}$/.test(value2[1])) throw new Error();
+        [before, beforeId] = value2;
+      } catch {
+        throw new HttpError(400, "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0443\u044E \u0447\u0430\u0441\u0442\u044C \u043B\u0435\u043D\u0442\u044B.");
+      }
+    }
+    const rows = (await db.prepare(`SELECT p.*,(SELECT COUNT(*) FROM feed_comments c WHERE c.post_id=p.id) AS comment_count,(SELECT COUNT(*) FROM feed_likes l WHERE l.post_id=p.id) AS like_count,EXISTS(SELECT 1 FROM feed_likes l WHERE l.post_id=p.id AND l.author_id=?) AS liked FROM feed_posts p WHERE p.created_at<? OR (p.created_at=? AND p.id<?) ORDER BY p.created_at DESC,p.id DESC LIMIT 21`).bind(user?.userId || "", before, before, beforeId).all()).results;
+    const posts = rows.slice(0, 20).map((p) => ({ id: p.id, authorName: p.author_name, body: p.body, createdAt: p.created_at, updatedAt: p.updated_at, commentCount: p.comment_count, likeCount: p.like_count, liked: Boolean(p.liked), canEdit: p.author_id === user?.userId, canDelete: p.author_id === user?.userId || isAdmin }));
+    const last = posts.at(-1);
+    return json({ posts, nextCursor: rows.length > 20 && last ? btoa(JSON.stringify([last.createdAt, last.id])) : null });
+  }
+  if (path.length === 1 && method === "POST") {
+    const account2 = requireUser(user), raw = await input(req), body = message(raw.body);
+    await throttle(db, account2.userId);
+    const id2 = crypto.randomUUID(), now = Date.now();
+    await db.prepare("INSERT INTO feed_posts(id,author_id,author_name,body,created_at,updated_at) VALUES(?,?,?,?,?,?)").bind(id2, account2.userId, account2.displayName.slice(0, 80), body, now, now).run();
+    return json({ id: id2 }, 201);
+  }
+  const post = await db.prepare("SELECT * FROM feed_posts WHERE id=?").bind(id || "").first();
+  if (!post) throw new HttpError(404, "\u041F\u0443\u0431\u043B\u0438\u043A\u0430\u0446\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430.");
+  if (path.length === 3 && path[2] === "comments" && method === "GET") {
+    const rows = (await db.prepare("SELECT * FROM feed_comments WHERE post_id=? ORDER BY created_at,id LIMIT 100").bind(id).all()).results;
+    return json({ comments: rows.map((c) => ({ id: c.id, authorName: c.author_name, body: c.body, createdAt: c.created_at, canDelete: c.author_id === user?.userId || isAdmin })) });
+  }
+  const account = requireUser(user);
+  if (path.length === 2 && method === "PUT") {
+    if (post.author_id !== account.userId) throw new HttpError(403, "\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0437\u0430\u043F\u0438\u0441\u044C \u043C\u043E\u0436\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0435\u0451 \u0430\u0432\u0442\u043E\u0440.");
+    const raw = await input(req);
+    await db.prepare("UPDATE feed_posts SET body=?,updated_at=? WHERE id=? AND author_id=?").bind(message(raw.body), Date.now(), id, account.userId).run();
+    return json({ ok: true });
+  }
+  if (path.length === 2 && method === "DELETE") {
+    if (post.author_id !== account.userId && !isAdmin) throw new HttpError(403, "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0437\u0430\u043F\u0438\u0441\u044C \u043C\u043E\u0436\u0435\u0442 \u0430\u0432\u0442\u043E\u0440 \u0438\u043B\u0438 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440.");
+    await db.batch([db.prepare("DELETE FROM feed_comments WHERE post_id=?").bind(id), db.prepare("DELETE FROM feed_likes WHERE post_id=?").bind(id), db.prepare("DELETE FROM feed_posts WHERE id=?").bind(id)]);
+    return json({ ok: true });
+  }
+  if (path.length === 3 && path[2] === "comments" && method === "POST") {
+    const raw = await input(req), body = message(raw.body, 1e3);
+    await throttle(db, account.userId);
+    const commentId = crypto.randomUUID();
+    const result = await db.prepare("INSERT INTO feed_comments(id,post_id,author_id,author_name,body,created_at) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM feed_comments WHERE post_id=?)<100").bind(commentId, id, account.userId, account.displayName.slice(0, 80), body, Date.now(), id).run();
+    if (!result.meta.changes) throw new HttpError(400, "\u0412 \u043E\u0431\u0441\u0443\u0436\u0434\u0435\u043D\u0438\u0438 \u0443\u0436\u0435 100 \u043A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0435\u0432. \u041D\u0430\u0447\u043D\u0438\u0442\u0435 \u043D\u043E\u0432\u0443\u044E \u043F\u0443\u0431\u043B\u0438\u043A\u0430\u0446\u0438\u044E.");
+    return json({ id: commentId }, 201);
+  }
+  if (path.length === 4 && path[2] === "comments" && method === "DELETE") {
+    const comment = await db.prepare("SELECT author_id FROM feed_comments WHERE id=? AND post_id=?").bind(path[3], id).first();
+    if (!comment) throw new HttpError(404, "\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
+    if (comment.author_id !== account.userId && !isAdmin) throw new HttpError(403, "\u041C\u043E\u0436\u043D\u043E \u0443\u0434\u0430\u043B\u0438\u0442\u044C \u0442\u043E\u043B\u044C\u043A\u043E \u0441\u0432\u043E\u0439 \u043A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439.");
+    await db.prepare("DELETE FROM feed_comments WHERE id=? AND post_id=?").bind(path[3], id).run();
+    return json({ ok: true });
+  }
+  if (path.length === 3 && path[2] === "like" && method === "PUT") {
+    const raw = await input(req);
+    if (typeof raw.liked !== "boolean") throw new HttpError(400, "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043E\u0442\u043C\u0435\u0442\u043A\u0443.");
+    await throttle(db, account.userId);
+    if (raw.liked) await db.prepare("INSERT INTO feed_likes(id,post_id,author_id) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING").bind(id + ":" + account.userId, id, account.userId).run();
+    else await db.prepare("DELETE FROM feed_likes WHERE post_id=? AND author_id=?").bind(id, account.userId).run();
+    return json({ liked: raw.liked, count: (await db.prepare("SELECT COUNT(*) AS n FROM feed_likes WHERE post_id=?").bind(id).first()).n });
+  }
+  throw new HttpError(404, "\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E.");
+}
+
+// lib/appearance-api.ts
+var themes = ["violet", "orchid", "ocean", "emerald", "sunset", "midnight", "dawn", "berry", "custom"];
+async function handleAppearance(req, user, { db, bucket }, path) {
+  const kind = path[1], businessId = path[2], method = req.method;
+  if (!["profile", "business"].includes(kind) || kind === "business" && !businessId) throw new HttpError(404, "\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430.");
+  let owner, canEdit, base, imageRequest;
+  if (kind === "profile") {
+    owner = requireUser(user).userId;
+    canEdit = true;
+    base = "/api/appearance/profile";
+    imageRequest = path.length === 3 && path[2] === "image";
+    if (path.length !== 2 && !imageRequest) throw new HttpError(404, "\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430.");
+  } else {
+    const b = await db.prepare("SELECT owner_id,published FROM businesses WHERE id=?").bind(businessId).first();
+    if (!b || !b.published && b.owner_id !== user?.userId) throw new HttpError(404, "\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430.");
+    owner = b.owner_id;
+    canEdit = user?.userId === owner;
+    base = "/api/appearance/business/" + encodeURIComponent(businessId);
+    imageRequest = path.length === 4 && path[3] === "image";
+    if (path.length !== 3 && !imageRequest) throw new HttpError(404, "\u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430.");
+  }
+  const id = kind === "profile" ? "profile:" + owner : "business:" + businessId;
+  let row = await db.prepare("SELECT * FROM page_appearances WHERE id=?").bind(id).first();
+  function response() {
+    return json({ theme: row?.theme || "violet", revision: row?.revision || 0, imageUrl: row?.object_key ? base + "/image?v=" + row.revision : null, canEdit });
+  }
+  if (method === "GET" && imageRequest) {
+    if (!row?.object_key || !bucket) throw new HttpError(404, "\u0424\u043E\u043D \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
+    const object = await bucket.get(row.object_key);
+    if (!object) throw new HttpError(404, "\u0424\u043E\u043D \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
+    return new Response(object.body, { headers: { "Content-Type": row.content_type, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox" } });
+  }
+  if (method === "GET") return response();
+  requireUser(user);
+  if (!canEdit) throw new HttpError(403, "\u0424\u043E\u043D \u043C\u0435\u043D\u044F\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043B\u0430\u0434\u0435\u043B\u0435\u0446 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B.");
+  if (imageRequest) throw new HttpError(405, "\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u0435 \u0444\u043E\u043D \u0447\u0435\u0440\u0435\u0437 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B.");
+  let raw, upload, newKey, theme = row?.theme || "violet", key2 = row?.object_key || null, type = row?.content_type || null, size = row?.size || 0;
+  if (method === "POST") {
+    const form = await req.formData();
+    raw = { revision: Number(form.get("revision")) };
+    const file = form.get("file");
+    if (!(file instanceof File) || !file.size || file.size > 8 * 1024 * 1024) throw new HttpError(400, "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 JPG, PNG \u0438\u043B\u0438 WebP \u0440\u0430\u0437\u043C\u0435\u0440\u043E\u043C \u0434\u043E 8 \u041C\u0411.");
+    upload = file;
+  } else if (method === "PUT" || method === "DELETE") raw = await input(req);
+  else throw new HttpError(405, "\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F.");
+  if (!Number.isInteger(raw.revision) || raw.revision !== (row?.revision || 0)) throw new HttpError(409, "\u0424\u043E\u043D \u0443\u0436\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F. \u0417\u0430\u043A\u0440\u043E\u0439\u0442\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0438\u0445 \u0441\u043D\u043E\u0432\u0430.");
+  if (method === "PUT") {
+    if (!themes.includes(raw.theme) || raw.theme === "custom" && !key2) throw new HttpError(400, "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0439 \u0444\u043E\u043D.");
+    theme = raw.theme;
+  }
+  if (method === "DELETE") {
+    theme = "violet";
+    key2 = null;
+    type = null;
+    size = 0;
+  }
+  if (upload) {
+    if (!bucket) throw new HttpError(503, "\u0425\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0435 \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E.");
+    const bytes = await upload.arrayBuffer();
+    type = imageType(new Uint8Array(bytes));
+    if (!type) throw new HttpError(400, "\u041F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044E\u0442\u0441\u044F \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F JPG, PNG \u0438 WebP.");
+    const total = (await db.prepare("SELECT COALESCE(SUM(size),0) AS n FROM page_appearances WHERE owner_id=?").bind(owner).first()).n;
+    if (total - size + upload.size > 200 * 1024 * 1024) throw new HttpError(400, "\u0414\u043E\u0441\u0442\u0438\u0433\u043D\u0443\u0442 \u043B\u0438\u043C\u0438\u0442 200 \u041C\u0411 \u0434\u043B\u044F \u0444\u043E\u043D\u043E\u0432\u044B\u0445 \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439.");
+    newKey = "page-backgrounds/" + encodeURIComponent(owner) + "/" + crypto.randomUUID();
+    await bucket.put(newKey, bytes, { httpMetadata: { contentType: type } });
+    key2 = newKey;
+    size = upload.size;
+    theme = "custom";
+  }
+  const revision = (row?.revision || 0) + 1, oldKey = row?.object_key;
+  try {
+    const result = row ? await db.prepare("UPDATE page_appearances SET theme=?,object_key=?,content_type=?,size=?,revision=?,updated_at=? WHERE id=? AND revision=?").bind(theme, key2, type, size, revision, Date.now(), id, row.revision).run() : await db.prepare("INSERT INTO page_appearances(id,owner_id,theme,object_key,content_type,size,revision,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING").bind(id, owner, theme, key2, type, size, revision, Date.now()).run();
+    if (!result.meta.changes) throw new HttpError(409, "\u0424\u043E\u043D \u0443\u0436\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F. \u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0437\u0430\u043D\u043E\u0432\u043E.");
+  } catch (error) {
+    if (newKey) await bucket.delete(newKey);
+    throw error;
+  }
+  row = { theme, object_key: key2, revision };
+  if (oldKey && oldKey !== key2) await bucket.delete(oldKey);
+  return response();
+}
+
 // lib/api.ts
 function scopeKey(owner, id) {
   return "private-files/" + encodeURIComponent(owner) + "/" + id;
@@ -458,6 +624,8 @@ async function handleApi(req, user, { db, bucket, adminEmail, adminUserId }) {
     if (path[0] === "me" && method === "GET") return json({ user: user ? { id: user.userId, name: user.displayName, isAdmin } : null });
     if (!db) throw new HttpError(503, "\u0425\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0435 \u0435\u0449\u0451 \u0437\u0430\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 \u043C\u0438\u043D\u0443\u0442\u0443.");
     if (path[0] === "profile") return await handleProfile(req, user, { db, bucket }, path);
+    if (path[0] === "feed") return await handleFeed(req, user, db, path, isAdmin);
+    if (path[0] === "appearance") return await handleAppearance(req, user, { db, bucket }, path);
     if (path[0] === "categories" && path.length === 1 && method === "GET") return json(await readSections(db));
     if (path[0] === "admin" && path[1] === "categories" && path.length === 2) {
       requireUser(user);
